@@ -1,22 +1,24 @@
 TBCaptial Architecture
 ======================
 
-Status: design only; no implementation yet.
+Status: Conda environment implemented; data and backtest code not implemented.
 
 
-1. System Context and Deployment Topology
------------------------------------------
+1. Local-only System Context
+----------------------------
 
-                         External data source
-                    +--------------------------+
-                    |       Tushare Pro        |
-                    +------------+-------------+
-                                 |
-                                 | API calls only from ingestion
-                                 v
+                 Primary source             Auxiliary source
+             +-------------------+         +-------------------+
+             |      AKShare      |         |      Tushare      |
+             +---------+---------+         +---------+---------+
+                       |                             |
+                       +--------------+--------------+
+                                      |
+                              ingestion only
+                                      v
 +----------------------------------------------------------------------------------+
 |                    TBCaptial Modular Monolith                                    |
-|              one repository / one release unit / one job process                 |
+|              one repository / one release unit / one local process               |
 |                                                                                  |
 |  +-------------+       +---------------------+       +-------------------------+  |
 |  | CLI / Config| ----> | Application         | ----> | Use Cases               |  |
@@ -26,164 +28,211 @@ Status: design only; no implementation yet.
 |                                  |                               |               |
 |       +--------------------------+-------------------------------+---------+     |
 |       |                          Internal Modules                          |     |
-|       |                                                                    |     |
 |       | data_source -> data_quality -> data_catalog -> market_data         |     |
 |       |                                      |                             |     |
 |       |                                      v                             |     |
-|       | feature -> universe -> strategy -> portfolio -> execution          |     |
-|       |                                                    |               |     |
-|       |                                                    v               |     |
-|       | evaluation <- experiment <- backtest_clock <- accounting           |     |
+|       | strategy -> target_intent -> AKQuant adapter -> A-share guard       |     |
+|       |                                  |                |                 |     |
+|       | evaluation <- artifacts <- result translator <- AKQuant engine      |     |
 |       |                                                                    |     |
-|       | domain: shared types, time rules, orders, fills, positions, ledger |     |
+|       | domain: time, bars, orders, fills, positions, cash ledger          |     |
 |       +--------------------------------------------------------------------+     |
 |                                                                                  |
-|  Infrastructure adapters: Tushare / Parquet / S3 / local FS / DuckDB / reports  |
-+-------------------------------+--------------------------------+-----------------+
-                                |                                |
-                 publish data snapshots                 publish run artifacts
-                                |                                |
-                                v                                v
+|  Adapters: AKShare / Tushare / AKQuant / local FS / Parquet / DuckDB / reports   |
++----------------------------------------+-----------------------------------------+
+                                         |
+                              snapshots and run artifacts
+                                         v
                   +-------------------------------------------------------+
-                  |        Shared S3-compatible Object Storage            |
+                  |        Authoritative Local Data Directory             |
                   |                                                       |
-                  |  raw/       immutable Tushare responses               |
-                  |  silver/    normalized market facts                   |
-                  |  gold/      rebuildable features and universes        |
-                  |  manifests/ partitions and immutable snapshots        |
-                  |  artifacts/ official backtest outputs                 |
+                  |  raw/        immutable provider responses             |
+                  |  silver/     normalized market facts                  |
+                  |  manifests/  partitions and immutable snapshots       |
+                  |  artifacts/  backtest outputs                         |
+                  |  staging/    same-filesystem unpublished writes       |
                   +--------------------------+----------------------------+
                                              |
-                                             | versioning + replication
+                                             | direct local reads
                                              v
                                   +-----------------------+
-                                  | Independent Backup    |
-                                  | / Recovery Location   |
+                                  | Local DuckDB Catalog  |
+                                  | rebuildable views     |
                                   +-----------------------+
 
-Notes:
+Constraints:
 
-* Object storage is infrastructure, not a quant microservice.
-* The same monolith is invoked for ingestion and research jobs.
-* Only the ingestion identity may publish market-data snapshots.
-* Research and backtest jobs never call Tushare.
+* No S3, cloud database, NAS, shared DuckDB file, or remote storage service.
+* AKShare is implemented first. Tushare only supplements or cross-checks an
+  explicitly selected dataset; a partition never silently mixes providers.
+* Research and backtest jobs never call AKShare or Tushare.
+* The same monolith runs ingestion and backtest commands.
 
 
-2. Multi-machine Data Access: Single Writer, Multiple Readers
--------------------------------------------------------------
+2. Local Storage and Optional Snapshot Transfer
+------------------------------------------------
 
-                             +------------------+
-                             | Ingestion Job    |
-                             | single writer    |
-                             +--------+---------+
-                                      |
-                                      | validate + publish
-                                      v
-                         +---------------------------+
-                         | Authoritative Object Store|
-                         | immutable snapshot_id     |
-                         +------+---------------+----+
-                                |               |
-                    snapshot_id |               | snapshot_id
-                                v               v
-             +-------------------------+   +-------------------------+
-             | Developer / Runner A    |   | Developer / Runner B    |
-             |                         |   |                         |
-             | +---------------------+ |   | +---------------------+ |
-             | | Content-addressed   | |   | | Content-addressed   | |
-             | | local Parquet cache | |   | | local Parquet cache | |
-             | +----------+----------+ |   | +----------+----------+ |
-             |            |            |   |            |            |
-             | +----------v----------+ |   | +----------v----------+ |
-             | | Local DuckDB catalog| |   | | Local DuckDB catalog| |
-             | | rebuildable views   | |   | | rebuildable views   | |
-             | +----------+----------+ |   | +----------+----------+ |
-             |            |            |   |            |            |
-             | +----------v----------+ |   | +----------v----------+ |
-             | | Research / Backtest | |   | | Research / Backtest | |
-             | +---------------------+ |   | +---------------------+ |
-             +-------------------------+   +-------------------------+
+                    +---------------------------+
+                    | Local Ingestion Process   |
+                    | one writer + file lock    |
+                    +-------------+-------------+
+                                  |
+                        validate + atomic rename
+                                  v
+                    +---------------------------+
+                    | Local Data Root           |
+                    | immutable snapshot_id     |
+                    +-------------+-------------+
+                                  |
+                  manifest + exact files + SHA-256
+                                  v
+                    +---------------------------+
+                    | Local DuckDB Views        |
+                    | Research / Backtest       |
+                    +---------------------------+
 
-There is no shared DuckDB database file. Each machine verifies object hashes and
-builds its own catalog. A pinned, cached snapshot remains usable while Tushare or
-the object store is temporarily unavailable.
+Optional machine transfer is explicit and offline:
+
+  source data root -> export snapshot bundle -> copy by user
+                   -> import into target local disk -> verify every hash
+                   -> rebuild target DuckDB catalog
+
+The runtime never connects to an external storage server. DuckDB is disposable;
+Parquet files and manifests are authoritative.
 
 
 3. Data Lifecycle and Snapshot Publication
 ------------------------------------------
 
- +---------+    +------------+    +-----------+    +--------------+
- | Tushare | -> | Raw Batch  | -> | Normalize | -> | Quality Gate |
- +---------+    | immutable  |    | + schema  |    +------+-------+
-                +------------+    +-----------+           |
-                                             +------------+------------+
-                                             | PASS / accepted WARN    | FAIL
-                                             v                         v
-                          +-------------------+                  +----------------+
-                          | Partition Manifest|                  | QUARANTINED    |
-                          | files + hashes    |                  | not queryable  |
-                          +---------+---------+                  +----------------+
-                                    |
-                                    v
-                          +-------------------+
-                          | Snapshot Manifest |
-                          | status=PUBLISHED  |
-                          +---------+---------+
-                                    |
-                                    v
-                  +--------------------------------------+
-                  | Cache -> DuckDB View -> Research     |
-                  +--------------------------------------+
+ +---------------------+    +-----------+    +-----------+    +--------------+
+ | Provider raw reply  | -> | Raw Batch | -> | Normalize | -> | Quality Gate |
+ | AKShare or Tushare  |    | immutable |    | + lineage |    +------+-------+
+ +---------------------+    +-----------+    +-----------+           |
+                                                     +---------------+---------+
+                                                     | PASS                   | FAIL
+                                                     v                        v
+                                    +------------------------+       +----------------+
+                                    | Partition Manifest     |       | QUARANTINED    |
+                                    | relative files + hashes|       | not queryable  |
+                                    +-----------+------------+       +----------------+
+                                                |
+                                      atomic local publish
+                                                v
+                                    +------------------------+
+                                    | Snapshot Manifest      |
+                                    | status=PUBLISHED       |
+                                    +-----------+------------+
+                                                |
+                                                v
+                                    +------------------------+
+                                    | DuckDB View / Backtest |
+                                    +------------------------+
 
-An upstream correction creates a new object, partition manifest, and child
+An upstream correction creates a new file, partition manifest, and child
 snapshot. It never overwrites data referenced by an earlier experiment.
 
 
-4. Backtest Event Order for Trading Day T
+4. Backtest Public Interface
+----------------------------
+
+ +-------------------+      +-------------------+
+ | BacktestRequest   |      | StrategySpec      |
+ | snapshot/config   |      | type + parameters |
+ +---------+---------+      +---------+---------+
+           +--------------------------+
+                      |
+                      v
+             +------------------+
+             | run_backtest()   |
+             +--------+---------+
+                      |
+                      v
+ +-----------------------------------------+
+ | AkQuantBacktestEngine adapter           |
+ | SnapshotFeedAdapter                     |
+ | TBCaptialStrategyBridge                 |
+ | AShareExecutionGuard                    |
+ | ResultTranslator                        |
+ +--------------------+--------------------+
+                      |
+              embedded same-process call
+                      v
+ +-----------------------------------------+
+ | AKQuant v0.3.2 backend                  |
+ | Rust event loop / orders / account      |
+ +--------------------+--------------------+
+                      |
+             translated read-only context
+                      v
+ +--------------------+--------------------+
+ | Strategy lifecycle                      |
+ | initialize -> start -> before_trading    |
+ | -> on_bars -> order/fill/reject -> after |
+ | -> stop                                 |
+ +--------------------+--------------------+
+                      |
+                      v
+ +-----------------------------------------+
+ | BacktestResult                          |
+ | summary + immutable artifact accessors  |
+ +-----------------------------------------+
+
+Formal runs accept snapshot_id, not a full-future DataFrame. StrategyContext
+provides as-of history, account views, and target-portfolio commands only.
+Only the internal bridge imports or inherits AKQuant types. Version, commit,
+wheel SHA-256, compatibility tests, and A-share rejection semantics are gates.
+
+
+5. Backtest Event Order for Trading Day T
 -----------------------------------------
 
- +------------------+
- | Advance clock    |
- +--------+---------+
-          v
  +------------------+     +------------------+     +------------------+
- | Corporate actions| --> | Unlock sellable  | --> | Execute pending  |
- | and status       |     | T+1 positions    |     | orders at open   |
+ | Apply actions /  | --> | Unlock sellable  | --> | before_trading   |
+ | security status  |     | T+1 positions    |     | read-only        |
  +------------------+     +------------------+     +--------+---------+
+                                                           |
                                                            v
  +------------------+     +------------------+     +------------------+
- | Mark at close    | <-- | Ledger update    | <-- | Fill / reject    |
- +--------+---------+     | cash + position  |     | with A-share rule|
-          |               +------------------+     +------------------+
+ | order/fill/reject| <-- | Ledger update    | <-- | Execute pending  |
+ | callbacks        |     | cash + position  |     | orders at open   |
+ +--------+---------+     +------------------+     +------------------+
+          |
           v
  +------------------+     +------------------+     +------------------+
- | Publish as-of T  | --> | Strategy creates | --> | Portfolio creates|
- | read-only view   |     | target intent    |     | constrained target|
+ | Mark at close    | --> | Frozen BarSlice  | --> | Strategy creates |
+ | as-of T          |     | all symbols once |     | target intent    |
  +------------------+     +------------------+     +--------+---------+
+                                                           |
                                                            v
  +------------------+     +------------------+     +------------------+
- | Persist daily    | <-- | Risk and order   | <-- | Order planning   |
- | state + metrics  |     | validation       |     | for T+1 open     |
+ | after_trading    | <-- | Persist + check  | <-- | Plan orders for  |
+ | read-only        |     | invariants       |     | T+1 open         |
  +------------------+     +------------------+     +------------------+
 
-Default time rule: data through the close of T may create an order for the open
-of T+1. The strategy cannot access data after its as-of boundary.
+Data through the close of T may create an intent for the open of T+1. A single
+BarSlice contains the complete expected universe for T, so cross-sectional
+strategies never depend on per-symbol callback arrival order.
 
 
-5. Reproducibility Envelope
+6. Reproducibility Envelope
 ---------------------------
 
  +----------------+   +----------------+   +----------------+
- | Git commit /   |   | Conda lock hash|   | Data snapshot  |
- | wheel hash     |   | + target OS/CPU|   | manifest hash  |
+ | Git commit /   |   | environment.yml|   | AKQuant wheel /|
+ | wheel hash     |   | + package list |   | commit hash    |
  +--------+-------+   +--------+-------+   +--------+-------+
           |                    |                    |
           +--------------------+--------------------+
                                |
  +----------------+            v             +----------------+
- | Run config hash| ----> +-----------+ <---- | Random seed    |
- +----------------+       |  run_id   |       +----------------+
-                          +-----+-----+
+ | Data snapshot  | ----> +-----------+ <---- | Request hash   |
+ | manifest hash  |       |  run_id   |       +----------------+
+ +----------------+       +-----+-----+       +----------------+
+                                ^
+                                |
+                        +---------------+
+                        | Random seed   |
+                        +---------------+
                                 |
                                 v
                        +------------------+

@@ -1,0 +1,47 @@
+name: tbcaptial
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.11
+  - pip>=24
+  - setuptools>=75
+  - wheel>=0.44
+
+  # Data frames, local columnar storage, and local analytics.
+  - numpy>=1.26,<3
+  - pandas>=2.2,<3
+  - pyarrow>=16,<23
+  - duckdb>=1.2,<2
+  - polars>=1,<2
+  - plotly>=5,<7
+  - tqdm>=4,<5
+
+  # Configuration and command-line infrastructure.
+  - pydantic>=2.7,<3
+  - pydantic-settings>=2.2,<3
+  - pyyaml>=6,<7
+  - typer>=0.12,<1
+  - tenacity>=8,<10
+
+  # Build the pinned local AKQuant Rust/Python backend into a wheel. AKQuant
+  # itself is installed by scripts/install_akquant_backend.sh after source
+  # identity and cleanliness checks pass.
+  - rust>=1.85,<2
+  - maturin>=1.11,<2
+
+  # Development and verification.
+  - pytest>=8,<10
+  - pytest-cov>=5,<8
+  - hypothesis>=6,<7
+  - ruff>=0.8,<1
+  - mypy>=1.10,<2
+  - pandas-stubs
+  - types-pyyaml
+  # AKShare and Tushare are distributed through PyPI. Keep pip last so
+  # Conda resolves native/scientific packages before pip runs.
+  - pip:
+      - akshare>=1.18,<2
+      - tushare>=1.4,<2
