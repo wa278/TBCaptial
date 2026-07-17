@@ -1,0 +1,194 @@
+TBCaptial Architecture
+======================
+
+Status: design only; no implementation yet.
+
+
+1. System Context and Deployment Topology
+-----------------------------------------
+
+                         External data source
+                    +--------------------------+
+                    |       Tushare Pro        |
+                    +------------+-------------+
+                                 |
+                                 | API calls only from ingestion
+                                 v
++----------------------------------------------------------------------------------+
+|                    TBCaptial Modular Monolith                                    |
+|              one repository / one release unit / one job process                 |
+|                                                                                  |
+|  +-------------+       +---------------------+       +-------------------------+  |
+|  | CLI / Config| ----> | Application         | ----> | Use Cases               |  |
+|  | / Bootstrap |       | Orchestrator        |       | ingest / snapshot /     |  |
+|  +-------------+       +----------+----------+       | backtest / report       |  |
+|                                  |                  +------------+------------+  |
+|                                  |                               |               |
+|       +--------------------------+-------------------------------+---------+     |
+|       |                          Internal Modules                          |     |
+|       |                                                                    |     |
+|       | data_source -> data_quality -> data_catalog -> market_data         |     |
+|       |                                      |                             |     |
+|       |                                      v                             |     |
+|       | feature -> universe -> strategy -> portfolio -> execution          |     |
+|       |                                                    |               |     |
+|       |                                                    v               |     |
+|       | evaluation <- experiment <- backtest_clock <- accounting           |     |
+|       |                                                                    |     |
+|       | domain: shared types, time rules, orders, fills, positions, ledger |     |
+|       +--------------------------------------------------------------------+     |
+|                                                                                  |
+|  Infrastructure adapters: Tushare / Parquet / S3 / local FS / DuckDB / reports  |
++-------------------------------+--------------------------------+-----------------+
+                                |                                |
+                 publish data snapshots                 publish run artifacts
+                                |                                |
+                                v                                v
+                  +-------------------------------------------------------+
+                  |        Shared S3-compatible Object Storage            |
+                  |                                                       |
+                  |  raw/       immutable Tushare responses               |
+                  |  silver/    normalized market facts                   |
+                  |  gold/      rebuildable features and universes        |
+                  |  manifests/ partitions and immutable snapshots        |
+                  |  artifacts/ official backtest outputs                 |
+                  +--------------------------+----------------------------+
+                                             |
+                                             | versioning + replication
+                                             v
+                                  +-----------------------+
+                                  | Independent Backup    |
+                                  | / Recovery Location   |
+                                  +-----------------------+
+
+Notes:
+
+* Object storage is infrastructure, not a quant microservice.
+* The same monolith is invoked for ingestion and research jobs.
+* Only the ingestion identity may publish market-data snapshots.
+* Research and backtest jobs never call Tushare.
+
+
+2. Multi-machine Data Access: Single Writer, Multiple Readers
+-------------------------------------------------------------
+
+                             +------------------+
+                             | Ingestion Job    |
+                             | single writer    |
+                             +--------+---------+
+                                      |
+                                      | validate + publish
+                                      v
+                         +---------------------------+
+                         | Authoritative Object Store|
+                         | immutable snapshot_id     |
+                         +------+---------------+----+
+                                |               |
+                    snapshot_id |               | snapshot_id
+                                v               v
+             +-------------------------+   +-------------------------+
+             | Developer / Runner A    |   | Developer / Runner B    |
+             |                         |   |                         |
+             | +---------------------+ |   | +---------------------+ |
+             | | Content-addressed   | |   | | Content-addressed   | |
+             | | local Parquet cache | |   | | local Parquet cache | |
+             | +----------+----------+ |   | +----------+----------+ |
+             |            |            |   |            |            |
+             | +----------v----------+ |   | +----------v----------+ |
+             | | Local DuckDB catalog| |   | | Local DuckDB catalog| |
+             | | rebuildable views   | |   | | rebuildable views   | |
+             | +----------+----------+ |   | +----------+----------+ |
+             |            |            |   |            |            |
+             | +----------v----------+ |   | +----------v----------+ |
+             | | Research / Backtest | |   | | Research / Backtest | |
+             | +---------------------+ |   | +---------------------+ |
+             +-------------------------+   +-------------------------+
+
+There is no shared DuckDB database file. Each machine verifies object hashes and
+builds its own catalog. A pinned, cached snapshot remains usable while Tushare or
+the object store is temporarily unavailable.
+
+
+3. Data Lifecycle and Snapshot Publication
+------------------------------------------
+
+ +---------+    +------------+    +-----------+    +--------------+
+ | Tushare | -> | Raw Batch  | -> | Normalize | -> | Quality Gate |
+ +---------+    | immutable  |    | + schema  |    +------+-------+
+                +------------+    +-----------+           |
+                                             +------------+------------+
+                                             | PASS / accepted WARN    | FAIL
+                                             v                         v
+                          +-------------------+                  +----------------+
+                          | Partition Manifest|                  | QUARANTINED    |
+                          | files + hashes    |                  | not queryable  |
+                          +---------+---------+                  +----------------+
+                                    |
+                                    v
+                          +-------------------+
+                          | Snapshot Manifest |
+                          | status=PUBLISHED  |
+                          +---------+---------+
+                                    |
+                                    v
+                  +--------------------------------------+
+                  | Cache -> DuckDB View -> Research     |
+                  +--------------------------------------+
+
+An upstream correction creates a new object, partition manifest, and child
+snapshot. It never overwrites data referenced by an earlier experiment.
+
+
+4. Backtest Event Order for Trading Day T
+-----------------------------------------
+
+ +------------------+
+ | Advance clock    |
+ +--------+---------+
+          v
+ +------------------+     +------------------+     +------------------+
+ | Corporate actions| --> | Unlock sellable  | --> | Execute pending  |
+ | and status       |     | T+1 positions    |     | orders at open   |
+ +------------------+     +------------------+     +--------+---------+
+                                                           v
+ +------------------+     +------------------+     +------------------+
+ | Mark at close    | <-- | Ledger update    | <-- | Fill / reject    |
+ +--------+---------+     | cash + position  |     | with A-share rule|
+          |               +------------------+     +------------------+
+          v
+ +------------------+     +------------------+     +------------------+
+ | Publish as-of T  | --> | Strategy creates | --> | Portfolio creates|
+ | read-only view   |     | target intent    |     | constrained target|
+ +------------------+     +------------------+     +--------+---------+
+                                                           v
+ +------------------+     +------------------+     +------------------+
+ | Persist daily    | <-- | Risk and order   | <-- | Order planning   |
+ | state + metrics  |     | validation       |     | for T+1 open     |
+ +------------------+     +------------------+     +------------------+
+
+Default time rule: data through the close of T may create an order for the open
+of T+1. The strategy cannot access data after its as-of boundary.
+
+
+5. Reproducibility Envelope
+---------------------------
+
+ +----------------+   +----------------+   +----------------+
+ | Git commit /   |   | Conda lock hash|   | Data snapshot  |
+ | wheel hash     |   | + target OS/CPU|   | manifest hash  |
+ +--------+-------+   +--------+-------+   +--------+-------+
+          |                    |                    |
+          +--------------------+--------------------+
+                               |
+ +----------------+            v             +----------------+
+ | Run config hash| ----> +-----------+ <---- | Random seed    |
+ +----------------+       |  run_id   |       +----------------+
+                          +-----+-----+
+                                |
+                                v
+                       +------------------+
+                       | Orders / fills / |
+                       | ledger / report  |
+                       +------------------+
+
+The same envelope must reproduce the same ordered event stream and outputs.
