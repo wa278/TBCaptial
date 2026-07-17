@@ -8,7 +8,7 @@
 
 本记录只验收当前实际开发机。按当前决定，不执行 `linux-64`、`osx-arm64` 或 `win-64` 的预求解和试装。新机器部署时重新运行同一创建脚本和 smoke test，并追加独立验收记录。
 
-本次验收覆盖 Conda 基础环境、AKShare 主数据源依赖、Tushare 辅助依赖、本地 Parquet/DuckDB 存储、开发工具，以及从固定源码构建的 AKQuant `v0.3.2` backend。AKQuant 的源码绝对路径只作为本机验收事实，不进入环境声明；新平台按同一 tag/commit 重新构建并记录平台 wheel hash。
+本次验收覆盖 Conda 基础环境、AKShare 主数据源依赖、Tushare 辅助依赖、本地 Parquet/DuckDB 存储、开发工具，以及从固定源码构建的 AKQuant `v0.3.2` backend。AKQuant 现在由 `third_party/akquant` submodule 绑定到指定 fork/commit；新平台初始化同一 gitlink 后重新构建并记录平台 wheel hash。
 
 ## 主机和 Conda
 
@@ -58,9 +58,9 @@
 | ZSTD Parquet 写入/读取 | PASS | schema、行数和数据一致 |
 | 本地 DuckDB 文件查询 | PASS | 能创建、查询和关闭本地数据库文件 |
 | 创建脚本内置离线 smoke test | PASS | 创建和更新路径均自动执行成功 |
-| AKQuant 源码身份 | PASS | tag `v0.3.2`、commit `2924e0cf...4045`、干净工作区 |
+| AKQuant 源码身份 | PASS | `wa278/akquant` submodule、commit `2924e0cf...4045`、干净工作区；不依赖 tag |
 | AKQuant release wheel 构建/安装 | PASS | CPython abi3 `osx-64` wheel 可导入，版本为 0.3.2 |
-| AKQuant wheel 重复构建 | PASS | 固定 commit epoch 后连续两次 SHA-256 均为 `a84c1e27...5fad` |
+| AKQuant wheel 重复构建 | PASS | submodule 路径下固定 commit epoch 后连续两次 SHA-256 均为 `d8890d25...a38b` |
 | 回测 backend 契约测试 | PASS | 真实 backend 的 next-open、T+1、整手、费用、多标的确定性共 9 项通过 |
 | Python 质量门 | PASS | Ruff lint/format check 与严格 Mypy 通过 |
 
@@ -85,7 +85,9 @@ make acceptance
 | `scripts/create_conda_env.sh` | `22310ce3622441789811d8407c50135192c9cf844bb2dd8027b6f0a9453c5a9c` |
 | `scripts/activate_conda_env.sh` | `28e4b4c7e88f00feb96114e7310190c5fbf251cadd06d73736234454c9c19409` |
 | `scripts/verify_conda_env.py` | `198eceeb8d60e7182123bf76e4c2e64e3446f43ccc53740e75a84ef12c90440f` |
-| `scripts/install_akquant_backend.sh` | `b7188fa17fdc5109de3f4165bfd5759b99a39737706f70d0028aad981f55473e` |
-| 本机 AKQuant wheel | `a84c1e279738b0b15471d0182135a3307dd9b2b4a32a33c09148b4355b685fad` |
+| `.gitmodules` | `b346991bbdf6e2cdfecdb3e7d41dabe4979c091ddfc4bbe6fc4e663ee1e11686` |
+| `scripts/init_submodules.sh` | `74b39639e3f502e73b2635372ce2ac2d610e40e71e7ff2ce5f5ace8ddebebf32` |
+| `scripts/install_akquant_backend.sh` | `4af53b216d7dd7e7a5f49ba3fac61607434acef42d222fcb92dad24eb7611e45` |
+| 本机 AKQuant wheel | `d8890d253a981745ad8d301ae901a5f73f750eeccdfde9f13d8b8f3dbe3ea38b` |
 
 创建脚本在本记录生成后若有修改，正式运行以 Git commit、实时文件 hash 和当次 `conda list --explicit` 为准；本表只对应本次验收基线。

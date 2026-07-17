@@ -4,11 +4,11 @@ set -euo pipefail
 
 readonly ENV_NAME="tbcaptial"
 readonly EXPECTED_VERSION="0.3.2"
-readonly EXPECTED_TAG="v${EXPECTED_VERSION}"
 readonly EXPECTED_COMMIT="2924e0cff36669a3563ffb5cb139da0ba9254045"
+readonly EXPECTED_REMOTE="git@github.com:wa278/akquant.git"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-readonly SOURCE_DIR="${AKQUANT_SOURCE_DIR:-${REPO_ROOT}/../akquant}"
+readonly SOURCE_DIR="${REPO_ROOT}/third_party/akquant"
 readonly WHEEL_STORE="${REPO_ROOT}/var/vendor/akquant"
 AKQUANT_BUILD_DIR=""
 
@@ -56,19 +56,22 @@ sha256_file() {
 }
 
 main() {
-    local conda_executable python_executable source_commit source_epoch source_tag source_status
+    local conda_executable python_executable source_commit source_epoch source_remote
+    local source_status
     local wheel_path wheel_name wheel_sha
     local -a wheels
 
-    if [[ ! -d "${SOURCE_DIR}/.git" ]] || [[ ! -f "${SOURCE_DIR}/Cargo.toml" ]]; then
+    if [[ ! -f "${SOURCE_DIR}/Cargo.toml" ]] || \
+        ! git -C "${SOURCE_DIR}" rev-parse --git-dir >/dev/null 2>&1
+    then
         printf 'AKQuant source repository not found: %s\n' "${SOURCE_DIR}" >&2
-        printf 'Set AKQUANT_SOURCE_DIR to the pinned source checkout.\n' >&2
+        printf 'Run ./scripts/init_submodules.sh first.\n' >&2
         return 1
     fi
 
     source_commit="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
     source_epoch="$(git -C "${SOURCE_DIR}" show -s --format=%ct "${EXPECTED_COMMIT}")"
-    source_tag="$(git -C "${SOURCE_DIR}" describe --tags --exact-match 2>/dev/null || true)"
+    source_remote="$(git -C "${SOURCE_DIR}" remote get-url origin)"
     source_status="$(git -C "${SOURCE_DIR}" status --porcelain)"
 
     if [[ "${source_commit}" != "${EXPECTED_COMMIT}" ]]; then
@@ -76,9 +79,9 @@ main() {
             "${EXPECTED_COMMIT}" "${source_commit}" >&2
         return 1
     fi
-    if [[ "${source_tag}" != "${EXPECTED_TAG}" ]]; then
-        printf 'AKQuant tag mismatch: expected %s, got %s\n' \
-            "${EXPECTED_TAG}" "${source_tag:-<none>}" >&2
+    if [[ "${source_remote}" != "${EXPECTED_REMOTE}" ]]; then
+        printf 'AKQuant remote mismatch: expected %s, got %s\n' \
+            "${EXPECTED_REMOTE}" "${source_remote}" >&2
         return 1
     fi
     if [[ -n "${source_status}" ]]; then
@@ -100,7 +103,7 @@ main() {
     trap cleanup_build EXIT
 
     printf 'Building AKQuant %s (%s) from %s\n' \
-        "${EXPECTED_TAG}" "${EXPECTED_COMMIT}" "${SOURCE_DIR}"
+        "${EXPECTED_VERSION}" "${EXPECTED_COMMIT}" "${SOURCE_DIR}"
     SOURCE_DATE_EPOCH="${source_epoch}" \
         "${conda_executable}" run --no-capture-output --name "${ENV_NAME}" \
         maturin build \

@@ -11,9 +11,7 @@
 在仓库根目录运行：
 
 ```bash
-make env
-make env-verify
-make akquant-backend
+make setup
 make acceptance
 make akshare-download
 make akshare-verify
@@ -21,12 +19,10 @@ make akshare-verify
 
 四条命令依次完成：
 
-1. 发现或安装 Miniforge，并创建/更新 `tbcaptial` 环境；
-2. 激活环境并执行依赖、Parquet 和 DuckDB smoke test；
-3. 从固定源码构建并安装 AKQuant `v0.3.2`；
-4. 运行环境、真实回测后端测试和静态检查；
-5. 激活环境并下载默认 AKShare 数据切片；
-6. 重新计算文件大小、SHA-256 和 Parquet 行数，验证最新下载清单。
+1. 初始化固定 AKQuant submodule，发现或安装 Miniforge，创建/更新环境并构建 backend；
+2. 运行环境、真实回测后端测试和静态检查；
+3. 激活环境并下载默认 AKShare 数据切片；
+4. 重新计算文件大小、SHA-256 和 Parquet 行数，验证最新下载清单。
 
 ## 2. Conda 环境
 
@@ -62,25 +58,29 @@ python scripts/verify_conda_env.py
 
 ### 2.4 构建固定 AKQuant backend
 
-推荐目录结构：
+AKQuant 通过 Git submodule 固定在 TBCaptial 仓库内：
 
 ```text
-workspace/
-├── TBCaptial/
-└── akquant/
+TBCaptial/
+└── third_party/
+    └── akquant/  # git@github.com:wa278/akquant.git
 ```
 
-本项目只接受 AKQuant `v0.3.2`、commit
-`2924e0cff36669a3563ffb5cb139da0ba9254045`。新机器先准备相邻源码：
+本项目只接受 commit `2924e0cff36669a3563ffb5cb139da0ba9254045`，构建后的 Python 包版本
+必须是 `0.3.2`；不依赖 Git tag。新机器推荐直接递归克隆：
 
 ```bash
-git clone https://github.com/akfamily/akquant.git ../akquant
-git -C ../akquant checkout --detach 2924e0cff36669a3563ffb5cb139da0ba9254045
-git -C ../akquant describe --tags --exact-match
-git -C ../akquant status --short
+git clone --recurse-submodules git@github.com:wa278/TBCaptial.git
+cd TBCaptial
 ```
 
-第三条应输出 `v0.3.2`，第四条应无输出。然后构建、安装并核验：
+已有普通 clone 使用下面的幂等入口初始化并校验 submodule：
+
+```bash
+make submodules
+```
+
+然后构建、安装并核验：
 
 ```bash
 make akquant-backend
@@ -88,13 +88,9 @@ source scripts/activate_conda_env.sh
 python -c 'import akquant; print(akquant.__version__)'
 ```
 
-安装脚本拒绝 commit/tag 不符或带未提交修改的源码；使用 commit 时间固定 wheel 的
-`SOURCE_DATE_EPOCH`，输出 SHA-256，并把本机 wheel 放到 `var/vendor/akquant/`。wheel 是平台相关
-产物，不提交 Git。若源码不在相邻目录：
-
-```bash
-AKQUANT_SOURCE_DIR=/absolute/path/to/akquant make akquant-backend
-```
+初始化脚本检查 submodule URL、commit 和干净工作区；安装脚本再次检查 remote/commit，使用
+commit 时间固定 wheel 的 `SOURCE_DATE_EPOCH`，输出 SHA-256，并把本机 wheel 放到
+`var/vendor/akquant/`。wheel 是平台相关产物，不提交 Git。
 
 第一次构建需要从 crates.io 下载 Rust/Polars 依赖，耗时明显长于增量构建。
 
@@ -103,6 +99,8 @@ AKQUANT_SOURCE_DIR=/absolute/path/to/akquant make akquant-backend
 ```bash
 make setup
 ```
+
+该命令按顺序完成 submodule 初始化、Conda 环境创建/更新和 AKQuant backend 构建安装。
 
 修改 `environment.yml` 后应重新执行 `make env` 和 `make akquant-backend`，确保固定 wheel 仍安装
 在同步后的环境中。不要把临时 `pip install` 当作依赖声明。
@@ -243,7 +241,39 @@ make akshare-verify
 - 所有文件 SHA-256 一致；
 - 每个 `data.parquet` 的实际行数与批次清单一致。
 
-## 6. 东方财富持续断连
+## 6. 预览数据
+
+预览最新一次完成下载的每个数据集，默认显示最后 5 行：
+
+```bash
+make akshare-preview
+```
+
+查看本地完成的下载任务：
+
+```bash
+./scripts/preview_akshare_data.sh --list-runs
+```
+
+预览指定股票的最新 10 行：
+
+```bash
+./scripts/preview_akshare_data.sh --dataset daily --symbol 000001 --rows 10
+```
+
+显示最早的数据，或选择明确的下载清单：
+
+```bash
+./scripts/preview_akshare_data.sh --dataset calendar --head --rows 10
+./scripts/preview_akshare_data.sh \
+  --manifest var/data/manifests/downloads/<run_id>.json \
+  --dataset benchmark --rows 5
+```
+
+预览器只读取 manifest 明确列出的 Parquet，不合并多个 Raw run，也不修改数据。默认选择最新完成
+的 run；正式研究仍应等待 Silver 和 snapshot，而不是直接依赖 Raw 预览结果。
+
+## 7. 东方财富持续断连
 
 典型异常是：
 
@@ -279,7 +309,7 @@ RemoteDisconnected('Remote end closed connection without response')
 - [Requests 官方文档](https://requests.readthedocs.io/en/latest/user/advanced/#proxies)：默认读取
   `http_proxy`、`https_proxy`、`no_proxy` 和 `all_proxy`。
 
-## 7. 常用命令
+## 8. 常用命令
 
 ```bash
 # 环境
@@ -291,6 +321,7 @@ source scripts/activate_conda_env.sh
 
 # 数据
 make akshare-download
+make akshare-preview
 make akshare-verify
 
 # 强制使用新浪日线，避开东财断连
@@ -305,17 +336,20 @@ make acceptance
 
 ## 8. AKQuant 常见问题与升级规则
 
-### 8.1 commit、tag 或工作区不匹配
+### 8.1 submodule commit、remote 或工作区不匹配
 
 先做只读检查：
 
 ```bash
-git -C ../akquant rev-parse HEAD
-git -C ../akquant describe --tags --exact-match
-git -C ../akquant status --short
+git submodule status
+git -C third_party/akquant remote get-url origin
+git -C third_party/akquant rev-parse HEAD
+git -C third_party/akquant status --short
 ```
 
-先自行保存需要保留的修改，再恢复到固定的干净 commit；不要为了通过检查删除未确认的工作。
+期望 remote 为 `git@github.com:wa278/akquant.git`，commit 为
+`2924e0cff36669a3563ffb5cb139da0ba9254045`，状态无输出。先自行保存需要保留的修改，再运行
+`make submodules` 恢复仓库记录的 gitlink；不要为了通过检查删除未确认的工作。
 
 ### 8.2 crates.io 下载失败
 
@@ -343,6 +377,6 @@ PyArrow/Polars 可能因沙箱禁止 `sysctlbyname` 而打印 CPU cache/指令 w
 
 ### 8.5 升级规则
 
-不得把版本改成 `latest`。升级必须同时固定 tag/commit、重建并记录 wheel SHA-256、确认公开
+不得把版本改成 `latest`。升级必须更新并固定 submodule commit、重建并记录 wheel SHA-256、确认公开
 适配层不泄漏 AKQuant 类型、运行全部 backend 契约测试，并在 `PLAN_LATEST.md` 记录行为变化。
 任何一项失败都继续使用当前 `v0.3.2`。

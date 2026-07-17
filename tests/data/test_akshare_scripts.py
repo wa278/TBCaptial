@@ -24,12 +24,14 @@ def load_script(module_name: str, filename: str) -> ModuleType:
 
 
 download = load_script("tbcaptial_download_script", "download_akshare_data.py")
+preview = load_script("tbcaptial_preview_script", "preview_akshare_data.py")
 verify = load_script("tbcaptial_verify_script", "verify_akshare_download.py")
 
 
 def test_auto_daily_source_circuit_breaks_to_sina(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """One Eastmoney failure must move the rest of the run to Sina."""
     eastmoney_symbols: list[str] = []
@@ -109,6 +111,25 @@ def test_auto_daily_source_circuit_breaks_to_sina(
         "stock_zh_index_daily",
     ]
     assert verify.verify_download_manifest(tmp_path.resolve(), manifest_path)["status"] == "PASS"
+
+    preview_exit_code = preview.main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--manifest",
+            str(manifest_path),
+            "--dataset",
+            "daily",
+            "--symbol",
+            "600000",
+            "--rows",
+            "1",
+        ]
+    )
+    output = capsys.readouterr().out
+    assert preview_exit_code == 0
+    assert "[daily] endpoint=stock_zh_a_daily" in output
+    assert "sh600000" in output
 
 
 def test_sina_symbol_prefixes_shanghai_and_shenzhen() -> None:

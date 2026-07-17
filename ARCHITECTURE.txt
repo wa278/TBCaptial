@@ -158,7 +158,9 @@ snapshot. It never overwrites data referenced by an earlier experiment.
               embedded same-process call
                       v
  +-----------------------------------------+
- | AKQuant v0.3.2 backend                  |
+ | AKQuant 0.3.2 installed wheel           |
+ | source: third_party/akquant submodule   |
+ | fixed fork + commit; tag not required   |
  | Rust event loop / orders / account      |
  +--------------------+--------------------+
                       |
