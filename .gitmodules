@@ -1,0 +1,3 @@
+[submodule "third_party/akquant"]
+	path = third_party/akquant
+	url = git@github.com:wa278/akquant.git
