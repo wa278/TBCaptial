@@ -15,6 +15,16 @@ DATASET_ENDPOINTS = {
     "calendar": {"tool_trade_date_hist_sina"},
     "daily": {"stock_zh_a_hist", "stock_zh_a_daily"},
     "benchmark": {"stock_zh_index_daily"},
+    "enrichment": {
+        "stock_profile_cninfo",
+        "stock_ipo_summary_cninfo",
+        "stock_dividend_cninfo",
+        "stock_share_change_cninfo",
+        "stock_industry_change_cninfo",
+        "stock_financial_analysis_indicator_em",
+        "stock_zygc_em",
+        "stock_financial_report_sina",
+    },
 }
 
 
@@ -32,7 +42,15 @@ def normalize_symbol(value: object) -> str:
     symbol = str(value).lower()
     if len(symbol) == 8 and symbol[:2] in {"sh", "sz", "bj"}:
         return symbol[2:]
+    if len(symbol) == 9 and symbol[6:] in {".sh", ".sz", ".bj"}:
+        return symbol[:6]
     return symbol
+
+
+def request_symbol(endpoint: str, parameters: dict[str, object]) -> object:
+    if endpoint == "stock_financial_report_sina":
+        return parameters.get("stock")
+    return parameters.get("symbol")
 
 
 def select_manifest(data_root: Path, requested: Path | None) -> Path:
@@ -72,6 +90,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--symbol", help="six-digit symbol filter for daily bars")
     parser.add_argument("--rows", type=int, default=5)
+    parser.add_argument(
+        "--max-columns",
+        type=int,
+        default=20,
+        help="maximum displayed columns; use 0 to show every column",
+    )
     parser.add_argument("--head", action="store_true", help="show earliest rows instead of latest")
     parser.add_argument("--list-runs", action="store_true")
     return parser.parse_args(argv)
@@ -94,6 +118,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if not 1 <= args.rows <= 100:
         raise ValueError("rows must be between 1 and 100")
+    if not 0 <= args.max_columns <= 500:
+        raise ValueError("max-columns must be between 0 and 500")
     if args.symbol is not None and (len(args.symbol) != 6 or not args.symbol.isdigit()):
         raise ValueError("symbol must contain exactly six digits")
 
@@ -123,9 +149,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         request_path = resolve_member(data_root, str(request_file["path"]))
         request = json.loads(request_path.read_text(encoding="utf-8"))
         parameters = request.get("parameters", {})
-        raw_symbol = parameters.get("symbol")
+        raw_symbol = request_symbol(endpoint, parameters)
         if args.symbol is not None and (
-            dataset != "daily" or normalize_symbol(raw_symbol) != args.symbol
+            dataset not in {"daily", "enrichment"} or normalize_symbol(raw_symbol) != args.symbol
         ):
             continue
 
@@ -141,11 +167,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print()
         print(
             f"[{dataset}] endpoint={endpoint} parameters={parameters} "
-            f"total_rows={len(frame)} showing={direction}:{len(sample)}"
+            f"total_rows={len(frame)} columns={len(frame.columns)} "
+            f"showing={direction}:{len(sample)}"
         )
         with pd.option_context(
             "display.max_columns",
-            None,
+            None if args.max_columns == 0 else args.max_columns,
             "display.width",
             200,
             "display.max_colwidth",

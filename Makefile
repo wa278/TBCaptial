@@ -1,10 +1,13 @@
 SHELL := /bin/bash
 
-.PHONY: setup submodules env env-verify akquant-backend akshare-download akshare-preview akshare-verify test quality acceptance
+.PHONY: setup submodules env env-verify akquant-backend akshare-complete akshare-download akshare-preview akshare-summary akshare-verify factor-backtests test quality acceptance
 
 AKSHARE_ARGS ?=
+AKSHARE_COMPLETE_ARGS ?=
 AKSHARE_PREVIEW_ARGS ?=
+AKSHARE_SUMMARY_ARGS ?=
 AKSHARE_VERIFY_ARGS ?=
+FACTOR_BACKTEST_ARGS ?=
 
 setup:
 	./scripts/init_submodules.sh
@@ -26,11 +29,20 @@ akquant-backend: submodules
 akshare-download:
 	./scripts/download_akshare_data.sh $(AKSHARE_ARGS)
 
+akshare-complete:
+	./scripts/download_akshare_complete.sh $(AKSHARE_COMPLETE_ARGS)
+
 akshare-preview:
 	./scripts/preview_akshare_data.sh $(AKSHARE_PREVIEW_ARGS)
 
+akshare-summary:
+	./scripts/summarize_akshare_data.sh $(AKSHARE_SUMMARY_ARGS)
+
 akshare-verify:
 	./scripts/verify_akshare_download.sh $(AKSHARE_VERIFY_ARGS)
+
+factor-backtests:
+	./scripts/run_factor_backtests.sh $(FACTOR_BACKTEST_ARGS)
 
 test:
 	source scripts/activate_conda_env.sh && pytest

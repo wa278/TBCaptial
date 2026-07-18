@@ -25,6 +25,7 @@ def load_script(module_name: str, filename: str) -> ModuleType:
 
 download = load_script("tbcaptial_download_script", "download_akshare_data.py")
 preview = load_script("tbcaptial_preview_script", "preview_akshare_data.py")
+summary = load_script("tbcaptial_summary_script", "summarize_akshare_data.py")
 verify = load_script("tbcaptial_verify_script", "verify_akshare_download.py")
 
 
@@ -130,6 +131,18 @@ def test_auto_daily_source_circuit_breaks_to_sina(
     assert preview_exit_code == 0
     assert "[daily] endpoint=stock_zh_a_daily" in output
     assert "sh600000" in output
+
+    result = summary.summarize(tmp_path.resolve())
+    assert result["completed_runs"] == 1
+    assert result["raw_rows"] == 4
+    assert result["daily"] == {
+        "symbols": 2,
+        "raw_rows": 2,
+        "unique_symbol_date_rows": 2,
+        "duplicate_symbol_date_rows": 0,
+        "date_range": {"start": "2026-07-17", "end": "2026-07-17"},
+    }
+    assert result["orphan_raw"] == {"batches": 0, "rows": 0, "daily_symbols": []}
 
 
 def test_sina_symbol_prefixes_shanghai_and_shenzhen() -> None:

@@ -146,7 +146,7 @@ def persist_raw_batch(
         response_payload = {
             "rows": len(result.frame),
             "columns": [str(column) for column in result.frame.columns],
-            "empty": False,
+            "empty": result.frame.empty,
             "elapsed_seconds": result.elapsed_seconds,
             "data_sha256": data_hash,
         }
